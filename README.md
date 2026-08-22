@@ -1,6 +1,6 @@
 # Fallen
 
-A Fabric mod for Minecraft 26.2. When you die, your items don't scatter and despawn — your **body stays where you fell**, a corpse wearing your skin, holding everything you were carrying plus your XP. Walk back and right-click to reclaim your gear (sneak-right-click grabs it all at once).
+A Fabric mod for Minecraft 26.1.2. When you die, your items don't scatter and despawn — your **body stays where you fell**, a corpse wearing your skin, holding everything you were carrying plus your XP. Walk back and right-click to reclaim your gear (sneak-right-click grabs it all at once).
 
 ## Features
 - Death leaves a lootable corpse instead of loose, despawning item drops (respects the `keepInventory` gamerule — with it on, nothing changes).
