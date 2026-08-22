@@ -25,6 +25,8 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.LivingEntity;
@@ -350,8 +352,8 @@ public class CorpseEntity extends LivingEntity {
         // are ahead of the position; starting the box at the position itself
         // just trails empty space behind the feet.
         Direction facing = getBedOrientation();
-        double nearFeet = 0.30; // feet-end edge, this far ahead of the position
-        double farHead = 1.58;  // head-end edge, this far ahead of the position
+        double nearFeet = 0.05; // feet-end edge, this far ahead of the position (shifted 4px feet-ward from 0.30)
+        double farHead = 1.33;  // head-end edge, this far ahead of the position (shifted 4px feet-ward from 1.58)
         double halfWidth = 0.34;
         double height = 0.45;
 
@@ -494,50 +496,84 @@ public class CorpseEntity extends LivingEntity {
     private void applyCorpseGravity() {
         if (pinned) {
             fallVelocity = 0.0;
-            return;
+            return; // relocated onto a fluid surface / into the void — it stays put
         }
-        // If the body is in lava or water, float it on the surface instead of
-        // sinking through to somewhere unreachable.
-        if (inFluid()) {
+        // If the body is in a still pool of lava/water, float it on the surface.
+        // Flowing fluid (a waterfall/lava sheet) is deliberately ignored — riding
+        // it up would leave the body high in the air — so there it keeps falling
+        // to the solid ground below.
+        if (inSourceFluid()) {
             floatOnFluid();
             return;
         }
         if (onGround()) {
-            settleOnSurface();
+            restOnGround(); // resting — snap onto the surface, but stay gravity-active
             return;
         }
+        // Airborne: falling, or just shoved upward by a fishing rod / wind charge.
+        // Pull it back down so a body can never be left hanging in the air.
         double before = getY();
         fallVelocity = Math.min(fallVelocity + 0.08, 3.0); // accelerate toward a terminal speed
         move(MoverType.SELF, new Vec3(0.0, -fallVelocity, 0.0));
-        if (inFluid()) {
-            floatOnFluid(); // fell into lava/water — surface it
-            return;
-        }
-        if (onGround() || getY() >= before) {
-            settleOnSurface(); // landed, or couldn't descend any further
+        if (inSourceFluid()) {
+            floatOnFluid();
+        } else if (onGround() || getY() >= before) {
+            restOnGround(); // landed, or couldn't descend any further
+            rescueFromFlow(); // never come to rest hidden inside flowing fluid
         }
     }
 
     /**
-     * Place the body exactly on the surface it came to rest on and hold it there,
-     * so it always sits on top of the floor rather than clipping into it, then
-     * pins it so it never drifts or re-sinks. If the resting spot turns out to be
-     * submerged, it floats on the fluid instead.
+     * If the body has come to rest inside flowing lava/water (hidden under the
+     * flow), move it to the nearest open surface — searching close, then wide
+     * enough to reach the floor at a fall's base. If truly nothing is open, it
+     * holds where it is; it is never launched upward. Runs on the landing tick.
      */
-    private void settleOnSurface() {
-        if (inFluid()) {
-            floatOnFluid();
+    private void rescueFromFlow() {
+        BlockPos p = blockPosition();
+        if (level().getFluidState(p).isEmpty() && level().getFluidState(p.above()).isEmpty()) {
+            return; // resting in the open — fine
+        }
+        RestSpot near = nearestOpenRest(level(), position(), p);
+        if (near == null) {
+            pin(); // nowhere open in range — hold here rather than rocket out of the flow
             return;
         }
-        fallVelocity = 0.0;
-        setPos(getX(), surfaceBelow(), getZ());
-        pin();
+        setPos(near.x(), near.y(), near.z());
+        if (near.pin()) {
+            pin();
+        }
     }
 
-    /** True when the body's feet (or head) are inside lava or water. */
-    private boolean inFluid() {
+    /**
+     * Rest a normal body cleanly on the block surface below — snapped so it never
+     * clips into the floor — but WITHOUT pinning it. Gravity stays active, so if
+     * something later knocks the body upward (a fishing rod, a wind charge) it
+     * falls back down and settles again instead of hanging where it was pushed.
+     *
+     * <p>The target is the surface plus the box's floor offset, so the body's
+     * hitbox rests exactly ON the block instead of 0.05 inside it — otherwise
+     * block collision shoves the body up a hair every tick and fights this snap,
+     * making it jitter. Residual velocity is cleared so a resting body sits still.
+     */
+    private void restOnGround() {
+        fallVelocity = 0.0;
+        setDeltaMovement(Vec3.ZERO);
+        double target = surfaceBelow() + 0.05; // 0.05 = makeBoundingBox's box-bottom offset
+        if (Math.abs(getY() - target) > 1.0E-3) {
+            setPos(getX(), target, getZ());
+        }
+    }
+
+    /**
+     * True when the body's feet (or head) are inside a <em>still</em> (source)
+     * pool of lava/water — something it should float on. Flowing fluid is ignored
+     * so the body drops through a waterfall/lava sheet to the ground instead of
+     * riding the flow up into the air.
+     */
+    private boolean inSourceFluid() {
         BlockPos p = blockPosition();
-        return !level().getFluidState(p).isEmpty() || !level().getFluidState(p.above()).isEmpty();
+        return level().getFluidState(p).isSource() || level().getFluidState(p.above()).isSource();
     }
 
     /**
@@ -560,7 +596,10 @@ public class CorpseEntity extends LivingEntity {
     private static double fluidSurfaceY(Level level, int x, int z, int startY) {
         int top = startY;
         for (int cy = startY; cy <= level.getMaxY(); cy++) {
-            if (level.getFluidState(new BlockPos(x, cy, z)).isEmpty()) {
+            // Only climb through SOURCE blocks — the still pool itself. A flowing
+            // column above (a fall pouring in) must not be climbed, or the body
+            // gets launched to the top of the fall instead of the pool surface.
+            if (!level.getFluidState(new BlockPos(x, cy, z)).isSource()) {
                 break;
             }
             top = cy;
@@ -589,35 +628,116 @@ public class CorpseEntity extends LivingEntity {
     }
 
     /**
-     * Where a fresh body should come to rest, scanning straight down from the
-     * death spot. The first thing it meets decides it: a fluid means float on the
+     * Where a fresh body should come to rest. Scans straight down from the death
+     * spot; the first thing it meets decides it: a still pool means float on its
      * surface (held in place); solid ground means fall to it normally; nothing but
-     * air to the bottom of the world (the void) means hold it just inside. This is
-     * what stops a body dying over lava/water/void from sinking somewhere it can't
-     * be reached.
+     * air to the bottom of the world (the void) means hold it just inside. Hitting
+     * <em>flowing</em> fluid (a lavafall/waterfall) switches to a nearest-surface
+     * search instead — the body rests on the closest solid block or still-fluid
+     * surface to the death spot, rather than tumbling to the bottom of the fall.
      */
-    public static RestSpot computeRestSpot(Level level, BlockPos death) {
+    public static RestSpot computeRestSpot(Level level, Vec3 deathPos) {
+        BlockPos death = BlockPos.containing(deathPos);
         int x = death.getX();
         int z = death.getZ();
         int minY = level.getMinY();
         for (int y = death.getY(); y >= minY; y--) {
             BlockPos pos = new BlockPos(x, y, z);
             FluidState fluid = level.getFluidState(pos);
+            if (fluid.isSource()) {
+                // First still pool below — float on its surface (rise to the top of
+                // the column, so dying deep in a lake still surfaces).
+                return new RestSpot(deathPos.x, fluidSurfaceY(level, x, z, y), deathPos.z, true);
+            }
             if (!fluid.isEmpty()) {
-                // Rise to the top of the fluid column, so dying deep in lava/water
-                // still floats the body on the surface rather than under it.
-                return new RestSpot(fluidSurfaceY(level, x, z, y), true);
+                // Flowing fluid — a lavafall/waterfall or a running sheet. Don't
+                // ride it down: rest on the nearest OPEN surface (a solid top in
+                // the air, or a still pool) so the body is never hidden under the
+                // flow. Search close first, then wide; only with nothing found at
+                // all is the body held where it died. Never launch it upward.
+                RestSpot near = nearestOpenRest(level, deathPos, death);
+                if (near != null) {
+                    return near;
+                }
+                return new RestSpot(deathPos.x, deathPos.y, deathPos.z, true);
             }
             VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
             if (!shape.isEmpty()) {
-                return new RestSpot(death.getY(), false); // solid below — free-fall onto it
+                return new RestSpot(deathPos.x, deathPos.y, deathPos.z, false); // solid below — free-fall onto it
             }
+            // Air: keep scanning down.
         }
-        return new RestSpot(minY + 1, true); // open void — hold it just inside the world
+        return new RestSpot(deathPos.x, minY + 1, deathPos.z, true); // open void — hold it just inside the world
     }
 
-    /** A body's initial resting Y and whether it should be held there (pinned) rather than fall. */
-    public record RestSpot(double y, boolean pin) {}
+    /**
+     * The nearest open resting surface, searching close first (6 out, 2 up,
+     * 12 down) and then wide (10 out, 4 up, 24 down) — the wide pass reaches the
+     * floor at the base of a tall lavafall. Null only when both passes fail.
+     */
+    private static RestSpot nearestOpenRest(Level level, Vec3 from, BlockPos center) {
+        RestSpot near = nearestRest(level, from, center, 6, 2, 12);
+        if (near != null) {
+            return near;
+        }
+        return nearestRest(level, from, center, 10, 4, 24);
+    }
+
+    /**
+     * The resting surface closest to {@code from}: the top of a solid block
+     * with air above it, or the surface of a still pool. Searched in a box
+     * {@code radius} out, {@code up} up and {@code down} down around
+     * {@code center}; closest by straight-line distance wins. Null when there's
+     * nothing to rest on in range.
+     */
+    private static RestSpot nearestRest(Level level, Vec3 from, BlockPos center,
+                                        int radius, int up, int down) {
+        Vec3 deathPos = from;
+        BlockPos death = center;
+        RestSpot best = null;
+        double bestDistSq = Double.MAX_VALUE;
+        int minY = Math.max(level.getMinY(), death.getY() - down);
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                int cx = death.getX() + dx;
+                int cz = death.getZ() + dz;
+                for (int y = death.getY() + up; y >= minY; y--) {
+                    BlockPos pos = new BlockPos(cx, y, cz);
+                    FluidState fluid = level.getFluidState(pos);
+                    if (fluid.isSource() && level.getFluidState(pos.above()).isEmpty()) {
+                        // Top of a still pool — a floatable surface.
+                        double sy = y + fluid.getHeight(level, pos);
+                        double d = deathPos.distanceToSqr(cx + 0.5, sy, cz + 0.5);
+                        if (d < bestDistSq) {
+                            bestDistSq = d;
+                            best = new RestSpot(cx + 0.5, sy, cz + 0.5, true);
+                        }
+                        break; // anything deeper in this column is under the pool
+                    }
+                    VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
+                    if (!shape.isEmpty()) {
+                        BlockPos above = pos.above();
+                        if (level.getBlockState(above).getCollisionShape(level, above).isEmpty()
+                                && level.getFluidState(above).isEmpty()) {
+                            // Solid top OPEN TO AIR — never a spot under flowing
+                            // fluid, where the body would lie hidden inside the flow.
+                            double sy = y + shape.max(Direction.Axis.Y) + 0.05; // 0.05 = box-bottom offset
+                            double d = deathPos.distanceToSqr(cx + 0.5, sy, cz + 0.5);
+                            if (d < bestDistSq) {
+                                bestDistSq = d;
+                                best = new RestSpot(cx + 0.5, sy, cz + 0.5, false);
+                            }
+                        }
+                        break; // anything deeper in this column is buried
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /** A body's initial resting spot and whether it should be held there (pinned) rather than fall. */
+    public record RestSpot(double x, double y, double z, boolean pin) {}
 
     @Override
     public void tick() {
@@ -629,6 +749,16 @@ public class CorpseEntity extends LivingEntity {
         }
         if (getPose() != Pose.SLEEPING) {
             setPose(Pose.SLEEPING);
+        }
+        if (isPassenger()) {
+            stopRiding(); // if a boat/minecart grabbed the fresh body, get it back out
+        }
+        // A pinned body (floating on a pool / held over the void) that gets
+        // knocked by a fishing rod or wind charge is no longer where it was
+        // pinned — release it so gravity re-settles it wherever it ends up,
+        // instead of it hanging in the air where the knock left it.
+        if (pinned && getDeltaMovement().lengthSqr() > 1.0E-4) {
+            pinned = false;
         }
         applyCorpseGravity();
         age++;
@@ -705,6 +835,43 @@ public class CorpseEntity extends LivingEntity {
     @Override
     public boolean isPushable() {
         return false;
+    }
+
+    @Override
+    protected boolean canRide(Entity vehicle) {
+        return false; // a body never climbs into a boat/minecart — it stays a body on the ground
+    }
+
+    /**
+     * Keep real body-sized dimensions in every pose. Without this, the SLEEPING
+     * pose collapses the entity to vanilla's tiny 0.2-block sleeping stub at the
+     * feet — and everything driven by dimensions (dimension refreshes, the fluid
+     * interaction box, projectile targeting margins) acts on a few pixels at the
+     * feet instead of the whole body. The long lying-body interaction box is
+     * still built in {@link #makeBoundingBox}; this keeps the base footprint
+     * honest between refreshes.
+     */
+    @Override
+    protected EntityDimensions getDefaultDimensions(Pose pose) {
+        return EntityDimensions.fixed(0.9f, 0.45f);
+    }
+
+    @Override
+    public float getPickRadius() {
+        return 0.2f; // a touch of forgiveness when aiming anywhere along the body
+    }
+
+    @Override
+    public boolean isPushedByFluid() {
+        // Flowing lava/water must never drag the body around — without this the
+        // current shoves it a little every tick (drifting/jittering downstream).
+        // Where the body rests is decided entirely by our own placement logic.
+        return false;
+    }
+
+    @Override
+    public boolean isAffectedByFluids() {
+        return false; // no swim physics either — the body is dead weight
     }
 
     @Override

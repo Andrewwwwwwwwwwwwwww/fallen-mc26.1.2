@@ -85,13 +85,13 @@ public abstract class PlayerDropMixin {
         }
 
         CorpseEntity corpse = new CorpseEntity(FallenEntities.CORPSE, level);
-        // Decide where the body rests by scanning down from the death spot: a
-        // death over lava/water floats the body on the surface, a death over the
-        // void holds it just inside the world, and a normal death lets it fall to
-        // the ground. Floated/void bodies are pinned so they can't sink into
-        // something unreachable; a normal body settles under its own fall.
-        CorpseEntity.RestSpot rest = CorpseEntity.computeRestSpot(level, self.blockPosition());
-        corpse.setPos(self.getX(), rest.y(), self.getZ());
+        // Decide where the body rests: a death over a still pool floats it on the
+        // surface, a death in flowing fluid rests it on the nearest surface (not
+        // the bottom of the fall), a death over the void holds it just inside the
+        // world, and a normal death lets it fall to the ground. Floated/held
+        // bodies are pinned so they can't sink into something unreachable.
+        CorpseEntity.RestSpot rest = CorpseEntity.computeRestSpot(level, self.position());
+        corpse.setPos(rest.x(), rest.y(), rest.z());
         if (rest.pin()) {
             corpse.pin();
         }

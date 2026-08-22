@@ -1,6 +1,7 @@
 package io.github.andrewwwwwwwwwwwwwww.fallen;
 
 import io.github.andrewwwwwwwwwwwwwww.fallen.api.FallenApi;
+import io.github.andrewwwwwwwwwwwwwww.fallen.compat.TravelersBackpackCorpseProvider;
 import io.github.andrewwwwwwwwwwwwwww.fallen.compat.TrinketsCorpseProvider;
 import io.github.andrewwwwwwwwwwwwwww.fallen.net.FallenNetworking;
 import net.fabricmc.api.ModInitializer;
@@ -30,6 +31,15 @@ public class Fallen implements ModInitializer {
                     Identifier.fromNamespaceAndPath(MOD_ID, "trinkets"),
                     new TrinketsCorpseProvider());
             LOGGER.info("[Fallen] Trinkets detected — equipped accessories will be stored in corpses");
+        }
+        // Soft compat: sweep a worn Traveler's Backpack into the body too. TB's
+        // own death handling places it as a block or drops it at the death spot,
+        // where a lava death burns it. Same reflection-only pattern as above.
+        if (FabricLoader.getInstance().isModLoaded("travelersbackpack")) {
+            FallenApi.register(
+                    Identifier.fromNamespaceAndPath(MOD_ID, "travelersbackpack"),
+                    new TravelersBackpackCorpseProvider());
+            LOGGER.info("[Fallen] Traveler's Backpack detected — worn backpacks will be stored in corpses");
         }
         // Config is per-installation; (re)load it as each server starts so
         // dedicated servers and singleplayer worlds both pick up edits.
