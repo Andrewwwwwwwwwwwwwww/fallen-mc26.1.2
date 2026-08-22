@@ -2,11 +2,16 @@ package io.github.andrewwwwwwwwwwwwwww.fallen.entity;
 
 import com.mojang.authlib.GameProfile;
 import io.github.andrewwwwwwwwwwwwwww.fallen.CorpseConfig;
+import io.github.andrewwwwwwwwwwwwwww.fallen.Fallen;
+import io.github.andrewwwwwwwwwwwwwww.fallen.api.FallenApi;
 import io.github.andrewwwwwwwwwwwwwww.fallen.deathhistory.DeathHistoryData;
 import io.github.andrewwwwwwwwwwwwwww.fallen.menu.CorpseMenu;
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.Identifier;
 import net.minecraft.core.Direction;
 import net.minecraft.core.NonNullList;
 import net.minecraft.core.UUIDUtil;
+import net.minecraft.util.Mth;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
@@ -23,16 +28,19 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.UUID;
 
@@ -44,6 +52,14 @@ import java.util.UUID;
  */
 public class CorpseEntity extends LivingEntity {
     private static final int SLOTS = CorpseMenu.CONTAINER_SIZE;
+
+    /**
+     * Group id used to re-store addon items (backpacks/trinkets) that couldn't be
+     * handed back because the player's inventory was full. No provider owns it, so
+     * on the next recovery they're simply retried into the inventory — never
+     * dropped, so a body over lava/void can't spill a player's accessories.
+     */
+    private static final Identifier KEPT_EXTRAS = Identifier.fromNamespaceAndPath(Fallen.MOD_ID, "kept");
 
     private static final EntityDataAccessor<String> DATA_OWNER_NAME =
             SynchedEntityData.defineId(CorpseEntity.class, EntityDataSerializers.STRING);
@@ -68,10 +84,28 @@ public class CorpseEntity extends LivingEntity {
     private String ownerName = "";
     private int storedXp;
     private long age;
+    /**
+     * Pinned bodies stay put where they were placed. Set only when a death in
+     * lava or over the void relocated the body to a safe spot, so it can't fall
+     * straight back into the hazard. A normal body falls (see
+     * {@link #applyCorpseGravity()}) and settles on the ground where it fell.
+     */
+    private boolean pinned;
+    /** Downward speed of the manual fall; reset to 0 once the body lands. */
+    private double fallVelocity;
 
     public CorpseEntity(EntityType<? extends CorpseEntity> type, Level level) {
         super(type, level);
-        this.setNoGravity(true); // stays where it fell — can't slide into the void or lava
+        // Vanilla LivingEntity physics never moves the body (setNoGravity); the
+        // fall is driven manually in tick() so a body reliably drops and comes
+        // to rest on the ground instead of hanging in the air. Hazard deaths are
+        // pinned and don't fall (see pin()).
+        this.setNoGravity(true);
+    }
+
+    /** Relocated out of a hazard: hold the body in place so it can't fall back in. */
+    public void pin() {
+        this.pinned = true;
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -132,6 +166,7 @@ public class CorpseEntity extends LivingEntity {
         out.putString("OwnerName", ownerName);
         out.putInt("StoredXp", storedXp);
         out.putLong("Age", age);
+        out.putBoolean("Pinned", pinned);
         NonNullList<ItemStack> list = NonNullList.withSize(SLOTS, ItemStack.EMPTY);
         for (int i = 0; i < SLOTS; i++) {
             list.set(i, contents.getItem(i));
@@ -149,6 +184,7 @@ public class CorpseEntity extends LivingEntity {
         ownerName = in.getStringOr("OwnerName", "");
         storedXp = in.getIntOr("StoredXp", 0);
         age = in.getLongOr("Age", 0L);
+        pinned = in.getBooleanOr("Pinned", false);
         NonNullList<ItemStack> list = NonNullList.withSize(SLOTS, ItemStack.EMPTY);
         in.child("Contents").ifPresent(child -> ContainerHelper.loadAllItems(child, list));
         for (int i = 0; i < SLOTS; i++) {
@@ -158,7 +194,7 @@ public class CorpseEntity extends LivingEntity {
         refreshExtraDisplay();
         this.entityData.set(DATA_OWNER_NAME, ownerName);
         this.entityData.set(DATA_OWNER_UUID, ownerUuid == null ? "" : ownerUuid.toString());
-        this.setNoGravity(true);
+        this.setNoGravity(true); // vanilla physics stays off; the manual fall handles a normal body
         this.setPose(Pose.SLEEPING);
     }
 
@@ -187,11 +223,16 @@ public class CorpseEntity extends LivingEntity {
         if (stack.isEmpty()) {
             return;
         }
-        removeExtraAt(displaySlot); // take it out of storage first, so nothing double-counts it
-        refreshExtraDisplay();      // pull the next stored item up into the slot
-        if (!player.getInventory().add(stack)) {
-            player.drop(stack, false);
+        // Only hand it over if it actually fits. If the inventory is full, take
+        // nothing and leave it stored — never drop it (a body over lava/void must
+        // not spill the item). Addon items are unstackable, so add() places the
+        // whole thing or none of it.
+        player.getInventory().add(stack); // mutates to whatever didn't fit
+        if (!stack.isEmpty()) {
+            return; // no room — keep it in the body
         }
+        removeExtraAt(displaySlot); // it was taken — drop it from storage
+        refreshExtraDisplay();      // pull the next stored item up into the slot
     }
 
     /** Remove the {@code flatIndex}-th non-empty stored stack, tidying empty groups. */
@@ -267,19 +308,26 @@ public class CorpseEntity extends LivingEntity {
         if (extras.isEmpty()) {
             return;
         }
+        // Providers place back what they can (e.g. re-equip a backpack); whatever
+        // they return, try to slot into the inventory WITHOUT ever dropping, and
+        // keep anything that still doesn't fit stored in the body so it stays
+        // until the player has room.
         java.util.List<ItemStack> leftovers =
                 io.github.andrewwwwwwwwwwwwwww.fallen.api.FallenApi.restoreAll(player, extras);
-        extras = new java.util.ArrayList<>();
-        refreshExtraDisplay();
+        java.util.List<ItemStack> kept = new java.util.ArrayList<>();
         for (ItemStack stack : leftovers) {
             if (stack == null || stack.isEmpty()) {
                 continue;
             }
-            player.getInventory().add(stack);
+            player.getInventory().add(stack); // mutates to whatever didn't fit
             if (!stack.isEmpty()) {
-                player.drop(stack, false);
+                kept.add(stack); // keep it in the body; never drop
             }
         }
+        extras = kept.isEmpty()
+                ? new java.util.ArrayList<>()
+                : new java.util.ArrayList<>(java.util.List.of(new FallenApi.Group(KEPT_EXTRAS, kept)));
+        refreshExtraDisplay();
     }
 
     /** Lay the body flat facing the direction the player was looking (used by the sleeping renderer). */
@@ -373,11 +421,12 @@ public class CorpseEntity extends LivingEntity {
                 && server.getServer().getPlayerList().isOp(new NameAndId(player.getGameProfile()))) {
             return true;
         }
-        // Once it has aged into a skeleton, anyone may loot it (if enabled).
+        // Locked to the owner until the body ages into a skeleton — then anyone may loot it.
+        // With skeletonStageIsPublic off (or no skeleton timer) it stays the owner's for good.
         if (cfg.skeletonStageIsPublic && cfg.skeletonTicks() > 0 && age >= cfg.skeletonTicks()) {
             return true;
         }
-        return age >= cfg.graceTicks();
+        return false;
     }
 
     /** Open this corpse's screen for a player (also used for remote recovery). */
@@ -403,13 +452,13 @@ public class CorpseEntity extends LivingEntity {
             }
             if (i < inv.getContainerSize() && inv.getItem(i).isEmpty()) {
                 inv.setItem(i, stack); // original slot free — put it right back
+                contents.setItem(i, ItemStack.EMPTY);
             } else {
-                inv.add(stack); // mutates to leftover
-                if (!stack.isEmpty()) {
-                    player.drop(stack, false);
-                }
+                inv.add(stack); // mutates to whatever didn't fit
+                // Keep the remainder in the body rather than dropping it, so a
+                // full inventory never spills loot (into lava/void, say).
+                contents.setItem(i, stack.isEmpty() ? ItemStack.EMPTY : stack);
             }
-            contents.setItem(i, ItemStack.EMPTY);
         }
         restoreExtrasTo(player); // backpacks/curios go back to their own slots
         awardExperience(player);
@@ -433,6 +482,143 @@ public class CorpseEntity extends LivingEntity {
 
     // --- lifecycle ----------------------------------------------------------
 
+    /**
+     * Drives the body's fall by hand so it reliably drops to the ground.
+     * Vanilla {@link LivingEntity} gravity is disabled ({@code setNoGravity}),
+     * so this is the only thing that moves a normal body — a sleeping-pose
+     * LivingEntity doesn't fall on its own. When it lands it snaps onto the real
+     * block surface below and pins there (see {@link #settleOnSurface()}), so it
+     * always rests cleanly on top and never ends up sunk into the floor. Pinned
+     * bodies (relocated out of lava/void, or already settled) don't fall.
+     */
+    private void applyCorpseGravity() {
+        if (pinned) {
+            fallVelocity = 0.0;
+            return;
+        }
+        // If the body is in lava or water, float it on the surface instead of
+        // sinking through to somewhere unreachable.
+        if (inFluid()) {
+            floatOnFluid();
+            return;
+        }
+        if (onGround()) {
+            settleOnSurface();
+            return;
+        }
+        double before = getY();
+        fallVelocity = Math.min(fallVelocity + 0.08, 3.0); // accelerate toward a terminal speed
+        move(MoverType.SELF, new Vec3(0.0, -fallVelocity, 0.0));
+        if (inFluid()) {
+            floatOnFluid(); // fell into lava/water — surface it
+            return;
+        }
+        if (onGround() || getY() >= before) {
+            settleOnSurface(); // landed, or couldn't descend any further
+        }
+    }
+
+    /**
+     * Place the body exactly on the surface it came to rest on and hold it there,
+     * so it always sits on top of the floor rather than clipping into it, then
+     * pins it so it never drifts or re-sinks. If the resting spot turns out to be
+     * submerged, it floats on the fluid instead.
+     */
+    private void settleOnSurface() {
+        if (inFluid()) {
+            floatOnFluid();
+            return;
+        }
+        fallVelocity = 0.0;
+        setPos(getX(), surfaceBelow(), getZ());
+        pin();
+    }
+
+    /** True when the body's feet (or head) are inside lava or water. */
+    private boolean inFluid() {
+        BlockPos p = blockPosition();
+        return !level().getFluidState(p).isEmpty() || !level().getFluidState(p.above()).isEmpty();
+    }
+
+    /**
+     * Float the body on the surface of the fluid it's in — rise to the top of the
+     * fluid column and rest on it — then pin it so it stays reachable on top of
+     * the lava/water rather than sinking into it.
+     */
+    private void floatOnFluid() {
+        fallVelocity = 0.0;
+        setPos(getX(), fluidSurfaceY(level(), Mth.floor(getX()), Mth.floor(getZ()), Mth.floor(getY())), getZ());
+        pin();
+    }
+
+    /**
+     * The Y of the top surface of the fluid column at (x, z): starting from
+     * {@code startY}, rise to the highest connected fluid block and return its
+     * surface. Used so a body in lava/water rests on the surface no matter how
+     * deep it started — never anchored below the surface.
+     */
+    private static double fluidSurfaceY(Level level, int x, int z, int startY) {
+        int top = startY;
+        for (int cy = startY; cy <= level.getMaxY(); cy++) {
+            if (level.getFluidState(new BlockPos(x, cy, z)).isEmpty()) {
+                break;
+            }
+            top = cy;
+        }
+        BlockPos topPos = new BlockPos(x, top, z);
+        return top + level.getFluidState(topPos).getHeight(level, topPos);
+    }
+
+    /**
+     * The top surface Y of the first solid block at or below the body's column.
+     * Shape-aware, so a body resting on a slab, snow layer or path reads the real
+     * top of that block, not the full-block height above it.
+     */
+    private double surfaceBelow() {
+        int x = Mth.floor(getX());
+        int z = Mth.floor(getZ());
+        int minY = level().getMinY();
+        for (int y = Mth.floor(getY() + 0.5); y >= minY; y--) {
+            BlockPos pos = new BlockPos(x, y, z);
+            VoxelShape shape = level().getBlockState(pos).getCollisionShape(level(), pos);
+            if (!shape.isEmpty()) {
+                return y + shape.max(Direction.Axis.Y);
+            }
+        }
+        return getY();
+    }
+
+    /**
+     * Where a fresh body should come to rest, scanning straight down from the
+     * death spot. The first thing it meets decides it: a fluid means float on the
+     * surface (held in place); solid ground means fall to it normally; nothing but
+     * air to the bottom of the world (the void) means hold it just inside. This is
+     * what stops a body dying over lava/water/void from sinking somewhere it can't
+     * be reached.
+     */
+    public static RestSpot computeRestSpot(Level level, BlockPos death) {
+        int x = death.getX();
+        int z = death.getZ();
+        int minY = level.getMinY();
+        for (int y = death.getY(); y >= minY; y--) {
+            BlockPos pos = new BlockPos(x, y, z);
+            FluidState fluid = level.getFluidState(pos);
+            if (!fluid.isEmpty()) {
+                // Rise to the top of the fluid column, so dying deep in lava/water
+                // still floats the body on the surface rather than under it.
+                return new RestSpot(fluidSurfaceY(level, x, z, y), true);
+            }
+            VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
+            if (!shape.isEmpty()) {
+                return new RestSpot(death.getY(), false); // solid below — free-fall onto it
+            }
+        }
+        return new RestSpot(minY + 1, true); // open void — hold it just inside the world
+    }
+
+    /** A body's initial resting Y and whether it should be held there (pinned) rather than fall. */
+    public record RestSpot(double y, boolean pin) {}
+
     @Override
     public void tick() {
         super.tick();
@@ -444,6 +630,7 @@ public class CorpseEntity extends LivingEntity {
         if (getPose() != Pose.SLEEPING) {
             setPose(Pose.SLEEPING);
         }
+        applyCorpseGravity();
         age++;
         // Age into a skeleton after the configured time (cosmetic + unlocks looting).
         long skeletonTicks = CorpseConfig.get().skeletonTicks();
@@ -451,8 +638,13 @@ public class CorpseEntity extends LivingEntity {
         if (entityData.get(DATA_SKELETON) != skeleton) {
             entityData.set(DATA_SKELETON, skeleton);
         }
-        if (getY() < level().getMinY() - 16) {
-            dropEverythingAndDiscard();
+        // Safety net: a body that somehow falls out of the bottom of the world
+        // (open void) is pinned just inside the floor so its loot stays in the
+        // body and reachable, rather than being dropped into the void.
+        if (getY() < level().getMinY()) {
+            setDeltaMovement(0.0, 0.0, 0.0);
+            setPos(getX(), level().getMinY() + 1, getZ());
+            pin();
             return;
         }
         long despawn = CorpseConfig.get().despawnTicks();

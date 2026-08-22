@@ -3,7 +3,7 @@
   "id": "fallen",
   "version": "${version}",
   "name": "Fallen",
-  "description": "When you die, your items don't scatter across the ground and vanish. Instead your body stays where you fell — a corpse wearing your skin — holding everything you were carrying, plus your XP. Walk back and right-click to reclaim your gear (sneak-right-click grabs it all at once). Corpses are yours to loot during a grace period, then anyone can, and if left too long they drop their contents so nothing is ever truly lost. Original code and assets.",
+  "description": "When you die, your items don't scatter and vanish. Your body stays where you fell — a corpse wearing your skin — holding everything you were carrying, plus your XP. It settles on the ground and floats on lava or water so nothing is left out of reach. Walk back and right-click to reclaim it (sneak-right-click takes everything), and a full inventory never spills your loot. A body is yours until it ages into a skeleton, then anyone can loot it; left too long, it drops its contents so nothing is ever truly lost. Optional Trinkets support. Original code and assets.",
   "authors": ["Andrewwwwwwwwwwwwwww"],
   "license": "All-Rights-Reserved",
   "environment": "*",
@@ -23,5 +23,8 @@
     "minecraft": "~26.1.2",
     "java": ">=25",
     "fabric-api": ">=0.148.2"
+  },
+  "suggests": {
+    "trinkets": "*"
   }
 }

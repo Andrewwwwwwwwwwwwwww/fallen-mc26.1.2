@@ -85,7 +85,16 @@ public abstract class PlayerDropMixin {
         }
 
         CorpseEntity corpse = new CorpseEntity(FallenEntities.CORPSE, level);
-        corpse.setPos(self.getX(), self.getY(), self.getZ());
+        // Decide where the body rests by scanning down from the death spot: a
+        // death over lava/water floats the body on the surface, a death over the
+        // void holds it just inside the world, and a normal death lets it fall to
+        // the ground. Floated/void bodies are pinned so they can't sink into
+        // something unreachable; a normal body settles under its own fall.
+        CorpseEntity.RestSpot rest = CorpseEntity.computeRestSpot(level, self.blockPosition());
+        corpse.setPos(self.getX(), rest.y(), self.getZ());
+        if (rest.pin()) {
+            corpse.pin();
+        }
         corpse.setYRot(self.getYRot());
         corpse.setOwner(self.getGameProfile());
         corpse.fill(byIndex, experience);
@@ -107,8 +116,10 @@ public abstract class PlayerDropMixin {
                     io.github.andrewwwwwwwwwwwwwww.fallen.api.FallenApi.flatten(extraGroups);
             DeathHistoryData.get(level.getServer()).record(
                     self.getUUID(),
+                    // Record where the BODY actually is (relocated out of lava/void),
+                    // not where the player died, so the history points at the corpse.
                     new DeathRecord(corpse.getUUID(), System.currentTimeMillis(), level.dimension().identifier(),
-                            self.blockPosition(), historyItems, experience, false, historyExtras),
+                            corpse.blockPosition(), historyItems, experience, false, historyExtras),
                     CorpseConfig.get().deathHistorySize);
         }
 

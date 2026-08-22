@@ -153,7 +153,7 @@ public class CorpseMenu extends AbstractContainerMenu {
 
             @Override
             public boolean mayPlace(ItemStack stack) {
-                return !readOnly;
+                return false; // take-only: you can only take items OUT of a corpse, never put them in
             }
 
             @Override
@@ -230,13 +230,13 @@ public class CorpseMenu extends AbstractContainerMenu {
             }
             if (i < inventory.getContainerSize() && inventory.getItem(i).isEmpty()) {
                 inventory.setItem(i, stack);
+                contents.setItem(i, ItemStack.EMPTY);
             } else {
-                inventory.add(stack);
-                if (!stack.isEmpty()) {
-                    player.drop(stack, false);
-                }
+                inventory.add(stack); // mutates to whatever didn't fit
+                // Keep the remainder in the body rather than dropping it, so a
+                // full inventory never spills loot (into lava/void, say).
+                contents.setItem(i, stack.isEmpty() ? ItemStack.EMPTY : stack);
             }
-            contents.setItem(i, ItemStack.EMPTY);
         }
         if (corpse != null) {
             corpse.returnExtrasTo(player); // backpacks/curios from addon slots go to their own slots
@@ -248,22 +248,20 @@ public class CorpseMenu extends AbstractContainerMenu {
         if (readOnly || isExtraSlot(index)) {
             return ItemStack.EMPTY; // nothing leaves a snapshot, or a read-only stored slot
         }
+        // Take-only: only corpse items shift-move (to the player). Shift-clicking
+        // one of your own items does nothing — you can never push items into a corpse.
+        if (index >= CORPSE_SLOTS) {
+            return ItemStack.EMPTY;
+        }
         Slot slot = this.slots.get(index);
         if (slot == null || !slot.hasItem()) {
             return ItemStack.EMPTY;
         }
         ItemStack stack = slot.getItem();
         ItemStack original = stack.copy();
-        if (index < CORPSE_SLOTS) {
-            // Corpse item -> straight to the player's own inventory.
-            if (!moveItemStackTo(stack, playerStart, this.slots.size(), true)) {
-                return ItemStack.EMPTY;
-            }
-        } else {
-            // Player item -> back into the corpse's vanilla slots.
-            if (!moveItemStackTo(stack, 0, CORPSE_SLOTS, false)) {
-                return ItemStack.EMPTY;
-            }
+        // Corpse item -> straight to the player's own inventory.
+        if (!moveItemStackTo(stack, playerStart, this.slots.size(), true)) {
+            return ItemStack.EMPTY;
         }
         if (stack.isEmpty()) {
             slot.set(ItemStack.EMPTY);

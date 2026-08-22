@@ -16,13 +16,11 @@ import java.nio.file.Path;
 public final class CorpseConfig {
     /** Master switch — when false, death behaves like vanilla. */
     public boolean enabled = true;
-    /** Minutes the corpse is lootable only by its owner (and operators). */
-    public double ownerGraceMinutes = 5.0;
-    /** Minutes before the corpse despawns and drops its contents. 0 = never. */
-    public double despawnMinutes = 120.0;
+    /** Minutes before the corpse despawns and drops its contents. 0 = never. Default 2 days (1 as a body, then 1 as a skeleton). */
+    public double despawnMinutes = 2880.0;
     /** Store the player's experience in the corpse and give it back on retrieval. */
     public boolean keepExperience = true;
-    /** Operators may always loot any corpse, ignoring the owner grace period. */
+    /** Operators may always loot any corpse, ignoring the owner lock. */
     public boolean opsBypassProtection = true;
     /** Spawn a corpse when the player dies over the void. If false, items drop as vanilla (and may be lost). */
     public boolean spawnOverVoid = true;
@@ -30,8 +28,8 @@ public final class CorpseConfig {
     public boolean spawnInLava = true;
     /** How far down to scan for solid ground before treating a death spot as "over the void". */
     public int voidScanDepth = 12;
-    /** Minutes before a corpse ages into a skeleton (cosmetic; 0 = never). */
-    public double skeletonMinutes = 60.0;
+    /** Minutes before a corpse ages into a skeleton and unlocks (0 = never). Default 1 day. */
+    public double skeletonMinutes = 1440.0;
     /** Once a corpse has aged into a skeleton, anyone may loot it. */
     public boolean skeletonStageIsPublic = true;
     /** How many past deaths to keep per player for the death-history screen. */
@@ -42,10 +40,6 @@ public final class CorpseConfig {
 
     public static CorpseConfig get() {
         return instance;
-    }
-
-    public long graceTicks() {
-        return Math.max(0L, (long) (ownerGraceMinutes * 60.0 * 20.0));
     }
 
     public long despawnTicks() {

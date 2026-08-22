@@ -4,16 +4,23 @@ import com.mojang.authlib.GameProfile;
 import io.github.andrewwwwwwwwwwwwwww.fallen.api.FallenApi;
 import io.github.andrewwwwwwwwwwwwwww.fallen.deathhistory.DeathHistoryData;
 import io.github.andrewwwwwwwwwwwwwww.fallen.deathhistory.DeathRecord;
+import io.github.andrewwwwwwwwwwwwwww.fallen.entity.CorpseEntity;
 import io.github.andrewwwwwwwwwwwwwww.fallen.menu.CorpseMenu;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.players.NameAndId;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -79,10 +86,31 @@ public final class FallenNetworking {
         DeathHistoryData data = DeathHistoryData.get(server);
         List<HistoryEntry> entries = new ArrayList<>();
         for (DeathRecord record : data.getFor(target)) {
-            entries.add(new HistoryEntry(record.time(), record.dimension().toString(), record.pos(),
+            entries.add(new HistoryEntry(record.time(), record.dimension().toString(), livePos(server, record),
                     record.nonEmptyCount(), record.corpseGone()));
         }
         ServerPlayNetworking.send(viewer, new HistoryPayload(name == null ? "?" : name, target.toString(), entries));
+    }
+
+    /**
+     * Where the body actually is now. Bodies settle under gravity (and hazard
+     * deaths were relocated), so the recorded spot can be stale — if the corpse
+     * still exists and is loaded, use its current position; otherwise fall back
+     * to the recorded spawn spot.
+     */
+    private static BlockPos livePos(MinecraftServer server, DeathRecord record) {
+        if (record.corpseGone()) {
+            return record.pos();
+        }
+        ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, record.dimension());
+        ServerLevel level = server.getLevel(key);
+        if (level != null) {
+            Entity entity = level.getEntity(record.corpseId());
+            if (entity instanceof CorpseEntity) {
+                return entity.blockPosition();
+            }
+        }
+        return record.pos();
     }
 
     private static void handleRecover(ServerPlayer requester, String targetStr, int index) {
