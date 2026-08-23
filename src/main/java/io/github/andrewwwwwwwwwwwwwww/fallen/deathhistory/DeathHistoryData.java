@@ -88,4 +88,13 @@ public class DeathHistoryData extends SavedData {
         }
         return list.get(index);
     }
+
+    /** Replace a record in place (operator body restore re-ties it to the new corpse). */
+    public void replace(UUID player, int index, DeathRecord record) {
+        List<DeathRecord> list = byPlayer.get(player);
+        if (list != null && index >= 0 && index < list.size()) {
+            list.set(index, record);
+            setDirty();
+        }
+    }
 }

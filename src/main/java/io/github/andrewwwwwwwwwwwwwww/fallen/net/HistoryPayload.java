@@ -9,8 +9,12 @@ import net.minecraft.resources.Identifier;
 
 import java.util.List;
 
-/** Server -> client: a player's death history, ready to display. */
-public record HistoryPayload(String ownerName, String targetUuid, List<HistoryEntry> entries) implements CustomPacketPayload {
+/**
+ * Server -> client: a player's death history, ready to display.
+ * {@code viewerIsOp} lets the screen show operator tools (body restore).
+ */
+public record HistoryPayload(String ownerName, String targetUuid, List<HistoryEntry> entries,
+                             boolean viewerIsOp) implements CustomPacketPayload {
     public static final Type<HistoryPayload> TYPE =
             new Type<>(Identifier.fromNamespaceAndPath(Fallen.MOD_ID, "history"));
 
@@ -18,6 +22,7 @@ public record HistoryPayload(String ownerName, String targetUuid, List<HistoryEn
             ByteBufCodecs.STRING_UTF8, HistoryPayload::ownerName,
             ByteBufCodecs.STRING_UTF8, HistoryPayload::targetUuid,
             HistoryEntry.STREAM_CODEC.apply(ByteBufCodecs.list()), HistoryPayload::entries,
+            ByteBufCodecs.BOOL, HistoryPayload::viewerIsOp,
             HistoryPayload::new);
 
     @Override

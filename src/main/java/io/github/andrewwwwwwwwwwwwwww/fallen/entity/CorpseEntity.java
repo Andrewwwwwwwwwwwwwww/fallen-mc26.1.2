@@ -110,6 +110,69 @@ public class CorpseEntity extends LivingEntity {
         this.pinned = true;
     }
 
+    /**
+     * Move an existing body to the given spot (operator rescue for a stuck or
+     * invisible body). Works across dimensions; the body's physics state is
+     * reset and it's placed through the normal safe-placement logic, so it
+     * settles/floats correctly wherever it arrives.
+     *
+     * @return the corpse at its new home — a new instance when the move crossed
+     *         a dimension border (vanilla recreates entities there)
+     */
+    public static CorpseEntity relocate(CorpseEntity corpse, ServerLevel target, Vec3 pos) {
+        RestSpot rest = computeRestSpot(target, pos);
+        CorpseEntity moved = corpse;
+        if (corpse.level() != target) {
+            java.util.UUID id = corpse.getUUID();
+            corpse.teleportTo(target, rest.x(), rest.y(), rest.z(), java.util.Set.of(), corpse.getYRot(), 0.0f, false);
+            if (target.getEntity(id) instanceof CorpseEntity recreated) {
+                moved = recreated;
+            }
+        }
+        moved.pinned = rest.pin();
+        moved.fallVelocity = 0.0;
+        moved.setDeltaMovement(Vec3.ZERO);
+        moved.setPos(rest.x(), rest.y(), rest.z());
+        return moved;
+    }
+
+    /**
+     * Re-create a lost body from a death-history record (operator body restore).
+     * The new corpse spawns at the recorded death spot — run through the normal
+     * placement logic — holding the record's full at-death snapshot: every
+     * inventory item in its original slot, the experience, and any stored addon
+     * items (kept under the no-provider group so they're handed straight back to
+     * the inventory on recovery). The fresh body starts a new life: locked to its
+     * owner and aging from zero.
+     */
+    public static CorpseEntity restoreFromRecord(ServerLevel level, GameProfile owner,
+                                                 io.github.andrewwwwwwwwwwwwwww.fallen.deathhistory.DeathRecord record) {
+        CorpseEntity corpse = new CorpseEntity(io.github.andrewwwwwwwwwwwwwww.fallen.FallenEntities.CORPSE, level);
+        RestSpot rest = computeRestSpot(level, Vec3.atBottomCenterOf(record.pos()));
+        corpse.setPos(rest.x(), rest.y(), rest.z());
+        if (rest.pin()) {
+            corpse.pin();
+        }
+        corpse.setOwner(owner);
+        NonNullList<ItemStack> byIndex = NonNullList.withSize(SLOTS, ItemStack.EMPTY);
+        java.util.List<ItemStack> items = record.items();
+        for (int i = 0; i < SLOTS && i < items.size(); i++) {
+            byIndex.set(i, items.get(i).copy());
+        }
+        corpse.fill(byIndex, record.xp());
+        java.util.List<ItemStack> extras = new java.util.ArrayList<>();
+        for (ItemStack stack : record.extras()) {
+            if (stack != null && !stack.isEmpty()) {
+                extras.add(stack.copy());
+            }
+        }
+        if (!extras.isEmpty()) {
+            corpse.setExtras(java.util.List.of(new FallenApi.Group(KEPT_EXTRAS, extras)));
+        }
+        level.addFreshEntity(corpse);
+        return corpse;
+    }
+
     public static AttributeSupplier.Builder createAttributes() {
         return LivingEntity.createLivingAttributes();
     }

@@ -35,6 +35,8 @@ public final class FallenNetworking {
         PayloadTypeRegistry.serverboundPlay().register(RequestHistoryPayload.TYPE, RequestHistoryPayload.CODEC);
         PayloadTypeRegistry.serverboundPlay().register(RecoverPayload.TYPE, RecoverPayload.CODEC);
         PayloadTypeRegistry.serverboundPlay().register(ReclaimExtraPayload.TYPE, ReclaimExtraPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(RestoreBodyPayload.TYPE, RestoreBodyPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(MoveBodyPayload.TYPE, MoveBodyPayload.CODEC);
 
         ServerPlayNetworking.registerGlobalReceiver(RequestHistoryPayload.TYPE, (payload, context) -> {
             ServerPlayer player = context.player();
@@ -61,6 +63,106 @@ public final class FallenNetworking {
                 });
             }
         });
+        ServerPlayNetworking.registerGlobalReceiver(RestoreBodyPayload.TYPE, (payload, context) -> {
+            ServerPlayer player = context.player();
+            MinecraftServer server = context.server();
+            if (server != null) {
+                server.execute(() -> handleRestore(player, payload.targetUuid(), payload.index()));
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(MoveBodyPayload.TYPE, (payload, context) -> {
+            ServerPlayer player = context.player();
+            MinecraftServer server = context.server();
+            if (server != null) {
+                server.execute(() -> handleMove(player, payload.targetUuid(), payload.index()));
+            }
+        });
+    }
+
+    /**
+     * Operator body rescue: bring an existing body to the operator so a stuck or
+     * invisible one can still be looted. If the record says the body exists but
+     * it can't be found in the world, the record is marked lost — turning the
+     * row's button into Respawn — so the items are recoverable either way.
+     */
+    private static void handleMove(ServerPlayer requester, String targetStr, int index) {
+        if (!isOp(requester)) {
+            return;
+        }
+        UUID target = parseUuid(targetStr);
+        if (target == null) {
+            return;
+        }
+        MinecraftServer server = serverOf(requester);
+        DeathHistoryData data = DeathHistoryData.get(server);
+        DeathRecord record = data.getRecord(target, index);
+        if (record == null) {
+            return;
+        }
+        String name = resolveName(server, target);
+        if (record.corpseGone()) {
+            requester.sendSystemMessage(Component.literal("That body is already gone — use Respawn."));
+            return;
+        }
+        ServerLevel level = server.getLevel(ResourceKey.create(Registries.DIMENSION, record.dimension()));
+        CorpseEntity corpse = null;
+        if (level != null) {
+            if (!(level.getEntity(record.corpseId()) instanceof CorpseEntity)) {
+                level.getChunk(record.pos()); // force-load where it should be, then look again
+            }
+            if (level.getEntity(record.corpseId()) instanceof CorpseEntity found) {
+                corpse = found;
+            }
+        }
+        if (corpse == null) {
+            // The record claims a body but the world doesn't have it. Reconcile:
+            // mark it lost so the operator can Respawn it instead.
+            data.replace(target, index, record.asGone());
+            requester.sendSystemMessage(Component.literal(
+                    "Couldn't find " + name + "'s body in the world — marked it lost. Use Respawn to bring it back."));
+            sendHistory(requester, target, name);
+            return;
+        }
+        CorpseEntity.relocate(corpse, (ServerLevel) requester.level(), requester.position());
+        requester.sendSystemMessage(Component.literal("Moved " + name + "'s body to you."));
+        sendHistory(requester, target, name);
+    }
+
+    /**
+     * Operator body restore: re-create a lost body from a death record. Guarded
+     * hard — operators only, and only for records whose body is actually gone,
+     * so it can never duplicate a body that still exists in the world.
+     */
+    private static void handleRestore(ServerPlayer requester, String targetStr, int index) {
+        if (!isOp(requester)) {
+            return;
+        }
+        UUID target = parseUuid(targetStr);
+        if (target == null) {
+            return;
+        }
+        MinecraftServer server = serverOf(requester);
+        DeathHistoryData data = DeathHistoryData.get(server);
+        DeathRecord record = data.getRecord(target, index);
+        if (record == null) {
+            return;
+        }
+        if (!record.corpseGone()) {
+            requester.sendSystemMessage(Component.literal("That body still exists — nothing to restore."));
+            return;
+        }
+        ServerLevel level = server.getLevel(ResourceKey.create(Registries.DIMENSION, record.dimension()));
+        if (level == null) {
+            requester.sendSystemMessage(Component.literal("That death's dimension isn't loaded."));
+            return;
+        }
+        String name = resolveName(server, target);
+        CorpseEntity corpse = CorpseEntity.restoreFromRecord(level, new GameProfile(target, name), record);
+        data.replace(target, index, record.asRestored(corpse.getUUID()));
+        BlockPos at = corpse.blockPosition();
+        requester.sendSystemMessage(Component.literal(
+                "Restored " + name + "'s body at " + at.getX() + ", " + at.getY() + ", " + at.getZ() + "."));
+        sendHistory(requester, target, name); // refresh the screen's data
     }
 
     private static void handleRequest(ServerPlayer requester, String targetStr) {
@@ -89,7 +191,8 @@ public final class FallenNetworking {
             entries.add(new HistoryEntry(record.time(), record.dimension().toString(), livePos(server, record),
                     record.nonEmptyCount(), record.corpseGone()));
         }
-        ServerPlayNetworking.send(viewer, new HistoryPayload(name == null ? "?" : name, target.toString(), entries));
+        ServerPlayNetworking.send(viewer, new HistoryPayload(
+                name == null ? "?" : name, target.toString(), entries, isOp(viewer)));
     }
 
     /**

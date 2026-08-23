@@ -41,6 +41,7 @@ public class FallenClient implements ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(HistoryPayload.TYPE, (payload, context) ->
                 context.client().execute(() ->
                         context.client().setScreenAndShow(new DeathHistoryScreen(
-                                payload.ownerName(), payload.targetUuid(), payload.entries()))));
+                                payload.ownerName(), payload.targetUuid(), payload.entries(),
+                                payload.viewerIsOp()))));
     }
 }

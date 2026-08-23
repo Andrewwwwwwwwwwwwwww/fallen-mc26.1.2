@@ -1,7 +1,9 @@
 package io.github.andrewwwwwwwwwwwwwww.fallen.client;
 
 import io.github.andrewwwwwwwwwwwwwww.fallen.net.HistoryEntry;
+import io.github.andrewwwwwwwwwwwwwww.fallen.net.MoveBodyPayload;
 import io.github.andrewwwwwwwwwwwwwww.fallen.net.RecoverPayload;
+import io.github.andrewwwwwwwwwwwwwww.fallen.net.RestoreBodyPayload;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -21,7 +23,8 @@ import java.util.List;
  * enforces creative-only recovery). Drawn with vanilla GUI chrome.
  */
 public class DeathHistoryScreen extends Screen {
-    private static final int PANEL_W = 320;
+    /** Preferred panel width; shrinks to fit small windows (see {@link #panelW}). */
+    private static final int MAX_PANEL_W = 430;
     private static final int HEADER = 26;
     private static final int ROW_H = 26;
     private static final int PER_PAGE = 6;
@@ -29,13 +32,16 @@ public class DeathHistoryScreen extends Screen {
     private static final int PANEL_H = HEADER + PER_PAGE * ROW_H + NAV_H;
     private static final int LOC_W = 58;
     private static final int ITEMS_W = 52;
+    private static final int RESTORE_W = 58;
     private static final SimpleDateFormat DATE = new SimpleDateFormat("MMM d, HH:mm");
 
     private final String ownerName;
     private final String targetUuid;
     private final List<HistoryEntry> entries;
+    private final boolean viewerIsOp;
     private int page;
 
+    private int panelW;
     private int panelLeft;
     private int panelTop;
     private int itemsX;
@@ -43,21 +49,24 @@ public class DeathHistoryScreen extends Screen {
     private int stripX;
     private int stripW;
 
-    public DeathHistoryScreen(String ownerName, String targetUuid, List<HistoryEntry> entries) {
+    public DeathHistoryScreen(String ownerName, String targetUuid, List<HistoryEntry> entries, boolean viewerIsOp) {
         super(Component.literal("Corpses"));
         this.ownerName = ownerName;
         this.targetUuid = targetUuid;
         this.entries = entries;
+        this.viewerIsOp = viewerIsOp;
     }
 
     @Override
     protected void init() {
-        panelLeft = (this.width - PANEL_W) / 2;
+        panelW = Math.min(MAX_PANEL_W, this.width - 10);
+        panelLeft = (this.width - panelW) / 2;
         panelTop = (this.height - PANEL_H) / 2;
-        itemsX = panelLeft + PANEL_W - 12 - ITEMS_W;
+        itemsX = panelLeft + panelW - 12 - ITEMS_W;
         locX = itemsX - 6 - LOC_W;
         stripX = panelLeft + 8;
-        stripW = locX - stripX - 8;
+        // Operators get a third (Respawn) column, so their text strip is narrower.
+        stripW = (viewerIsOp ? locX - 6 - RESTORE_W : locX) - stripX - 8;
 
         int rowsTop = panelTop + HEADER;
         int start = page * PER_PAGE;
@@ -69,6 +78,17 @@ public class DeathHistoryScreen extends Screen {
                     .bounds(locX, bY, LOC_W, 20).build());
             addRenderableWidget(Button.builder(Component.literal("Items"), b -> recover(index))
                     .bounds(itemsX, bY, ITEMS_W, 20).build());
+            // Operator tools: a gone body can be re-created at the death spot
+            // (Respawn); an existing one can be brought to the operator (Move) —
+            // the rescue for a body that's stuck or invisible in the world.
+            if (viewerIsOp) {
+                Button opButton = entry.corpseGone()
+                        ? Button.builder(Component.literal("Respawn"), b -> restore(index))
+                                .bounds(locX - 6 - RESTORE_W, bY, RESTORE_W, 20).build()
+                        : Button.builder(Component.literal("Move"), b -> move(index))
+                                .bounds(locX - 6 - RESTORE_W, bY, RESTORE_W, 20).build();
+                addRenderableWidget(opButton);
+            }
         }
 
         int navY = panelTop + PANEL_H - 26;
@@ -82,16 +102,16 @@ public class DeathHistoryScreen extends Screen {
             addRenderableWidget(Button.builder(Component.literal("Next >"), b -> {
                 page++;
                 rebuildWidgets();
-            }).bounds(panelLeft + PANEL_W - 74, navY, 64, 20).build());
+            }).bounds(panelLeft + panelW - 74, navY, 64, 20).build());
         }
         addRenderableWidget(Button.builder(Component.literal("Done"), b -> onClose())
-                .bounds(panelLeft + PANEL_W / 2 - 32, navY, 64, 20).build());
+                .bounds(panelLeft + panelW / 2 - 32, navY, 64, 20).build());
     }
 
     @Override
     public void extractBackground(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
         super.extractBackground(graphics, mouseX, mouseY, partialTick);
-        GuiPainter.panel(graphics, panelLeft, panelTop, PANEL_W, PANEL_H);
+        GuiPainter.panel(graphics, panelLeft, panelTop, panelW, PANEL_H);
         int rowsTop = panelTop + HEADER;
         int start = page * PER_PAGE;
         for (int i = 0; i < PER_PAGE && start + i < entries.size(); i++) {
@@ -107,7 +127,7 @@ public class DeathHistoryScreen extends Screen {
         int rowsTop = panelTop + HEADER;
         if (entries.isEmpty()) {
             String none = "No current deaths.";
-            graphics.text(this.font, none, panelLeft + (PANEL_W - this.font.width(none)) / 2, rowsTop + 30, 0xFF606060, false);
+            graphics.text(this.font, none, panelLeft + (panelW - this.font.width(none)) / 2, rowsTop + 30, 0xFF606060, false);
             return;
         }
 
@@ -149,6 +169,18 @@ public class DeathHistoryScreen extends Screen {
     private void recover(int index) {
         ClientPlayNetworking.send(new RecoverPayload(targetUuid, index));
         onClose();
+    }
+
+    /** Ask the server to re-create this record's lost body (op-only; server re-checks). */
+    private void restore(int index) {
+        ClientPlayNetworking.send(new RestoreBodyPayload(targetUuid, index));
+        // Stay open — the server sends a refreshed history, which replaces this screen.
+    }
+
+    /** Ask the server to bring this record's existing body to me (op-only; server re-checks). */
+    private void move(int index) {
+        ClientPlayNetworking.send(new MoveBodyPayload(targetUuid, index));
+        // Stay open — the refreshed history replaces this screen (or flips the row to Respawn).
     }
 
     private static String shortDim(String dimension) {

@@ -38,6 +38,11 @@ public record DeathRecord(UUID corpseId, long time, Identifier dimension, BlockP
         return new DeathRecord(corpseId, time, dimension, pos, items, xp, true, extras);
     }
 
+    /** A copy of this record re-tied to a freshly restored body (operator body restore). */
+    public DeathRecord asRestored(UUID newCorpseId) {
+        return new DeathRecord(newCorpseId, time, dimension, pos, items, xp, false, extras);
+    }
+
     /** Non-empty item count, for display — counts stored backpacks/curios too. */
     public int nonEmptyCount() {
         int count = 0;
