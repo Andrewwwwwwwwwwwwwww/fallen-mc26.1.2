@@ -1,6 +1,7 @@
 package io.github.andrewwwwwwwwwwwwwww.fallen.mixin;
 
 import io.github.andrewwwwwwwwwwwwwww.fallen.CorpseConfig;
+import io.github.andrewwwwwwwwwwwwwww.fallen.Fallen;
 import io.github.andrewwwwwwwwwwwwwww.fallen.FallenEntities;
 import io.github.andrewwwwwwwwwwwwwww.fallen.entity.CorpseEntity;
 import io.github.andrewwwwwwwwwwwwwww.fallen.deathhistory.DeathHistoryData;
@@ -33,11 +34,18 @@ public abstract class PlayerDropMixin {
     @Inject(method = "dropEquipment", at = @At("HEAD"), cancellable = true)
     private void fallen$captureCorpse(ServerLevel level, CallbackInfo ci) {
         Player self = (Player) (Object) this;
-        if (!CorpseConfig.get().enabled || self.isSpectator()) {
+        String who = self.getGameProfile().name();
+        if (!CorpseConfig.get().enabled) {
+            Fallen.debug("no body for {}: the mod is disabled in the config", who);
+            return;
+        }
+        if (self.isSpectator()) {
+            Fallen.debug("no body for {}: they died in spectator mode", who);
             return;
         }
         // keepInventory keeps everything already — nothing to bury.
         if (level.getGameRules().get(GameRules.KEEP_INVENTORY)) {
+            Fallen.debug("no body for {}: keepInventory is on", who);
             return;
         }
 
@@ -66,9 +74,11 @@ public abstract class PlayerDropMixin {
         // own mod) instead of stranding items we'd already captured.
         CorpseConfig cfg = CorpseConfig.get();
         if (!cfg.spawnInLava && self.isInLava()) {
+            Fallen.debug("no body for {}: died in lava and spawnInLava is off", who);
             return;
         }
         if (!cfg.spawnOverVoid && isOverVoid(level, self.blockPosition(), cfg.voidScanDepth)) {
+            Fallen.debug("no body for {}: died over the void and spawnOverVoid is off", who);
             return;
         }
 
@@ -81,6 +91,7 @@ public abstract class PlayerDropMixin {
         boolean anyExtras = !extraGroups.isEmpty();
 
         if (!anyItems && experience <= 0 && !anyExtras) {
+            Fallen.debug("no body for {}: empty inventory, no xp and no stored equipment", who);
             return; // truly nothing to bury — let vanilla proceed (it drops nothing)
         }
 
@@ -99,6 +110,24 @@ public abstract class PlayerDropMixin {
         corpse.setOwner(self.getGameProfile());
         corpse.fill(byIndex, experience);
         corpse.setExtras(extraGroups);
+
+        // Put the body in the world BEFORE taking anything off the player. If
+        // the world refuses it — another mod vetoing the spawn is the usual
+        // reason — everything must still be on the player so vanilla can drop it
+        // the normal way. Clearing the inventory first, as this used to, deleted
+        // it outright on the rare occasions the spawn didn't take.
+        if (!level.addFreshEntity(corpse)) {
+            Fallen.LOGGER.warn(
+                    "[Fallen] could not place a body for {} at {} {} {} in {} — the world refused the "
+                            + "corpse entity, so their items are dropping on the ground instead. Another "
+                            + "mod vetoing entity spawning there is the usual cause.",
+                    who, (int) rest.x(), (int) rest.y(), (int) rest.z(),
+                    level.dimension().identifier());
+            returnExtras(self, extraGroups); // hand back what the addons already gave up
+            return;
+        }
+        Fallen.debug("body of {} placed at {} {} {} in {}",
+                who, (int) rest.x(), (int) rest.y(), (int) rest.z(), level.dimension().identifier());
 
         // Log this death, tied to the corpse, so the "your corpses" screen shows
         // only bodies that still exist. The entry is removed when the corpse is
@@ -125,9 +154,29 @@ public abstract class PlayerDropMixin {
 
         inventory.clearContent();
         self.skipDropExperience(); // we're carrying the XP in the corpse; don't also drop orbs
-
-        level.addFreshEntity(corpse);
         ci.cancel();
+    }
+
+    /**
+     * Give back the addon items (backpacks, trinkets) captured for a body that
+     * then failed to spawn. Whatever a provider won't re-equip goes into the
+     * inventory, which vanilla is about to drop anyway; if even that is full it
+     * is dropped directly, so a failed body never eats someone's gear.
+     */
+    private static void returnExtras(Player player,
+                                     java.util.List<io.github.andrewwwwwwwwwwwwwww.fallen.api.FallenApi.Group> groups) {
+        if (groups.isEmpty()) {
+            return;
+        }
+        for (ItemStack stack : io.github.andrewwwwwwwwwwwwwww.fallen.api.FallenApi.restoreAll(player, groups)) {
+            if (stack == null || stack.isEmpty()) {
+                continue;
+            }
+            player.getInventory().add(stack); // mutates to whatever didn't fit
+            if (!stack.isEmpty()) {
+                player.drop(stack, false);
+            }
+        }
     }
 
     /** True when there's no solid ground within {@code depth} blocks below the death spot. */

@@ -34,6 +34,8 @@ public final class CorpseConfig {
     public boolean skeletonStageIsPublic = true;
     /** How many past deaths to keep per player for the death-history screen. */
     public int deathHistorySize = 20;
+    /** Log every decision the death handler makes, for diagnosing a missing body. */
+    public boolean debugLogging = false;
 
     private static CorpseConfig instance = new CorpseConfig();
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
