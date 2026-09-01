@@ -6,14 +6,16 @@ A fix for a rare but severe item-loss bug, diagnostics for missing bodies, and c
 
 - **Fixed: a body that failed to spawn deleted the inventory.** The corpse was added to the world *after* the player's inventory had already been cleared and the vanilla drop cancelled — and the result was never checked. On the rare occasions the world refused the entity (another mod vetoing entity spawning is the usual reason), the player got no body, no drops, and no items at all. The body is now placed **before** anything is taken from the player, and if the world refuses it everything drops the vanilla way instead. Anything the Trinkets/Traveler's Backpack hooks had already collected is handed back too.
 - **A failed body now says so.** It logs the player, the position, the dimension and the likely cause, rather than failing silently.
-- **`/fallen debug <true\|false>`** — logs every decision the death handler makes, including each reason it declines to create a body (`keepInventory`, spectator, empty inventory, a lava/void setting, or a refused spawn). A missing body otherwise looks exactly like an ordinary death, so this is the way to find out which check declined it.
-- **Open Parties and Claims support.** Ships an entity tag, `#fallen:corpses`, so bodies can be excluded from claim protection, and prints the exact config line at startup when OPAC is installed. Without it, claims block looting a body inside them:
+- **`/fallen debug <true|false>`** — logs every decision the death handler makes, including each reason it declines to create a body (`keepInventory`, spectator, empty inventory, a lava/void setting, or a refused spawn). A missing body otherwise looks exactly like an ordinary death, so this is the way to find out which check declined it.
+- **Open Parties and Claims support.** Ships an entity tag, `#fallen:corpses`, so bodies can be excluded from claim protection, and prints the exact config line at startup when OPAC is installed. Without it, claims block looting a body inside them.
 
-  ```toml
-  forcedEntityProtectionExceptionList = ["minecraft:minecart", "anything$#fallen:corpses"]
-  ```
+To allow it, add this to `forcedEntityProtectionExceptionList` in `<world>/serverconfig/openpartiesandclaims-server.toml` (the server must be stopped to edit the file):
 
-  in `<world>/serverconfig/openpartiesandclaims-server.toml` (the server must be stopped to edit it). The `anything$` prefix matters — without it a player holding a sword still can't loot their own body. Fallen's own owner-lock applies regardless, so a body stays locked to its owner either way.
+```toml
+forcedEntityProtectionExceptionList = ["minecraft:minecart", "anything$#fallen:corpses"]
+```
+
+The `anything$` prefix matters — without it a player holding a sword still can't loot their own body. Fallen's own owner-lock applies regardless, so a body stays locked to its owner either way.
 
 ## 1.2.0 — 2026-08-23
 
